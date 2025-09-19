@@ -936,7 +936,6 @@ def main() -> None:
         help="Path to expert data file or Minari dataset ID (e.g., D4RL/pen-expert-v2)",
     )
     parser.add_argument(
-    parser.add_argument(
         "--num_epochs",
         type=int,
         default=100,

@@ -13,7 +13,12 @@ SRC_DIR = os.path.join(REPO_ROOT, 'src')
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from model import FlowMatchingPolicy
+try:
+    from model import FlowMatchingPolicy, VAE, NoiseToAction  # type: ignore
+except ImportError:  # Defensive: older checkouts may not expose VAE/NoiseToAction
+    from model import FlowMatchingPolicy  # type: ignore
+    VAE = None  # type: ignore
+    NoiseToAction = None  # type: ignore
 
 device = (
     torch.device("cuda") if torch.cuda.is_available()
@@ -88,6 +93,165 @@ def load_policy(policy_path: str, obs_dim: int, action_dim: int):
     policy.load_state_dict(state_dict)
     policy.eval()
     return policy
+
+
+def _infer_mlp_hidden_dims(state_dict: dict, prefix: str) -> tuple[list[int], bool, bool]:
+    """Infer hidden layer widths, layernorm, and dropout usage for sequential MLPs."""
+    linear_entries: list[tuple[int, int, int]] = []
+    layernorm_present = False
+    for key, value in state_dict.items():
+        if not key.startswith(prefix):
+            continue
+        if key.endswith(".weight") and isinstance(value, torch.Tensor):
+            if value.ndim == 2:
+                try:
+                    idx = int(key.split('.')[1])
+                except (IndexError, ValueError):
+                    continue
+                linear_entries.append((idx, value.shape[1], value.shape[0]))
+            elif value.ndim == 1:
+                layernorm_present = True
+    if not linear_entries:
+        raise ValueError("Unable to infer hidden dims from state dict")
+    linear_entries.sort(key=lambda x: x[0])
+    hidden = [out_dim for (_, _, out_dim) in linear_entries[:-1]]
+    if not hidden:
+        hidden = [linear_entries[-1][1]]  # Degenerate single-layer; mirror input width
+
+    dropout_present = False
+    if len(linear_entries) >= 2:
+        indices = [item[0] for item in linear_entries]
+        for i in range(len(indices) - 1):
+            step = indices[i + 1] - indices[i]
+            modules_between = max(0, step - 1)
+            # Baseline module count always includes the activation (1) and optional layernorm (1)
+            baseline = 1 + (1 if layernorm_present else 0)
+            if modules_between > baseline:
+                dropout_present = True
+                break
+            # When layernorm absent, a modules_between of 2 implies dropout (activation + dropout)
+            if not layernorm_present and modules_between >= 2:
+                dropout_present = True
+                break
+    return hidden, layernorm_present, dropout_present
+
+
+def _attach_optional_stats(model, metadata: dict) -> None:
+    for attr in ("output_mean", "output_std", "clip_low", "clip_high"):
+        if attr in metadata:
+            setattr(model, attr, metadata[attr])
+
+
+def load_pretrain_model(pretrain_path: str, action_dim: int):
+    """Load a pretrain prior model (NoiseToAction/VAE) for x0 sampling."""
+    ckpt = torch.load(pretrain_path, map_location=device)
+
+    # Handle direct torch.nn.Module saves
+    if isinstance(ckpt, torch.nn.Module):
+        model = ckpt.to(device)
+        model.eval()
+        return model
+
+    if not isinstance(ckpt, dict):
+        raise ValueError("Unsupported pretrain checkpoint format; expected dict or nn.Module")
+
+    metadata = {k: v for k, v in ckpt.items() if k != 'model_state_dict'}
+    state_dict = ckpt.get('model_state_dict')
+    if state_dict is None:
+        raise ValueError("Pretrain checkpoint missing 'model_state_dict'")
+
+    # Guess model type
+    model_type = str(metadata.get('model_type', metadata.get('arch', ''))).lower()
+    if not model_type:
+        keys = list(state_dict.keys())
+        if any(k.startswith('decoder') for k in keys):
+            model_type = 'vae'
+        elif any(k.startswith('net.') for k in keys):
+            model_type = 'noise_to_action'
+        else:
+            raise ValueError("Unable to infer model type from checkpoint; please specify metadata")
+
+    if model_type in ('vae', 'flow_vae'):
+        if VAE is None:
+            raise ImportError("VAE class unavailable; cannot load pretrain model")
+        hidden_dims = metadata.get('hidden_dims') or metadata.get('decoder_hidden_dims')
+        if hidden_dims is None:
+            hidden_dims, _, _ = _infer_mlp_hidden_dims(state_dict, prefix='decoder')
+        latent_dim = int(metadata.get('latent_dim', 64))
+        dropout_p = float(metadata.get('dropout_p', 0.0) or 0.0)
+        layernorm = bool(metadata.get('layernorm', False))
+        squash = bool(metadata.get('squash_actions', metadata.get('squash', False)))
+        model = VAE(
+            input_dim=action_dim,
+            hidden_dims=list(map(int, hidden_dims)),
+            latent_dim=latent_dim,
+            dropout_p=dropout_p,
+            layernorm=layernorm,
+            squash_actions=squash,
+        )
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"⚠️  VAE checkpoint missing keys: {missing}")
+        if unexpected:
+            print(f"⚠️  VAE checkpoint unexpected keys: {unexpected}")
+        _attach_optional_stats(model, metadata)
+        model = model.to(device)
+        model.eval()
+        return model
+
+    if model_type in ('noise_to_action', 'mlp', 'n2a'):
+        if NoiseToAction is None:
+            raise ImportError("NoiseToAction class unavailable; cannot load pretrain model")
+        hidden_dims = metadata.get('hidden_dims') or metadata.get('policy_hidden_dims')
+        inferred_layernorm = False
+        dropout_present = False
+        if hidden_dims is None:
+            hidden_dims, inferred_layernorm, dropout_present = _infer_mlp_hidden_dims(state_dict, prefix='net')
+        dropout_p = float(metadata.get('dropout_p', 0.0) or 0.0)
+        layernorm = bool(metadata.get('layernorm', inferred_layernorm))
+        if dropout_present and dropout_p <= 0.0:
+            # Maintain architecture indices; keep dropout layer but default prob 0.
+            dropout_p = float(metadata.get('dropout', 0.0) or 0.0)
+            if dropout_p <= 0.0:
+                dropout_p = 1e-8
+        squash = bool(metadata.get('squash_actions', metadata.get('squash', False)))
+        model = NoiseToAction(
+            input_dim=action_dim,
+            hidden_dims=list(map(int, hidden_dims)),
+            dropout_p=dropout_p,
+            layernorm=layernorm,
+            squash_actions=squash,
+        )
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"⚠️  NoiseToAction checkpoint missing keys: {missing}")
+        if unexpected:
+            print(f"⚠️  NoiseToAction checkpoint unexpected keys: {unexpected}")
+        _attach_optional_stats(model, metadata)
+        model = model.to(device)
+        model.eval()
+        return model
+
+    raise ValueError(f"Unsupported pretrain model type '{model_type}'")
+
+
+class PretrainSampler:
+    """Callable wrapper to draw normalized x0 samples from a pretrain model."""
+
+    def __init__(self, model):
+        self.model = model.to(device)
+        self.model.eval()
+
+    def __call__(self, batch_size: int) -> torch.Tensor:
+        with torch.no_grad():
+            samples = self.model.sample(batch_size, device=device)
+        if isinstance(samples, np.ndarray):
+            samples = torch.from_numpy(samples)
+        if not torch.is_tensor(samples):
+            raise ValueError("Pretrain model sample() must return Tensor or ndarray")
+        samples = samples.to(device=device, dtype=torch.float32)
+        samples = samples.view(batch_size, -1)
+        return samples
 
 
 def parse_schedule(arg: str) -> Tuple[List[float], List[float]]:
@@ -220,9 +384,10 @@ def main():
     parser.add_argument('--policy_path', type=str, required=True, help='Trained policy checkpoint (.pth)')
     parser.add_argument('--num_train', type=int, required=True, help='Number of training samples; remainder used as validation')
     parser.add_argument('--flow_schedule', type=str, default='[0.1,0.5,0.9]', help='Interior points, e.g., [0.1,0.5] or int N')
-    parser.add_argument('--pretrain_model', type=str, default='none', help='Optional pretrain model for x0 sampling')
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--knn_index', type=str, default='knn_index.joblib', help='Path to prebuilt KNN index (joblib/pkl). If missing, falls back to on-the-fly KNN.')
+    parser.add_argument('--pretrain_model', type=str, default=None,
+                        help='Optional NoiseToAction/VAE checkpoint to sample x0 from. Defaults to standard Normal when omitted.')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--obs_noise_std', type=float, default=0.0, help='Gaussian noise std applied to normalized obs')
     parser.add_argument('--random_obs', action='store_true', help='Replace obs with random obs from training (diagnostic)')
@@ -245,8 +410,8 @@ def main():
 
     set_seed(args.seed)
 
-    # Unified data loader from pretrain.py
-    from pretrain import load_data as _load_demo_data
+    # Reuse the canonical loader from train_flow.py
+    from train_flow import load_data as _load_demo_data
     data_dict = _load_demo_data(args.data_path)
     obs_all = data_dict['observations']
     act_all = data_dict['actions']
@@ -295,12 +460,16 @@ def main():
     # Load policy
     policy = load_policy(args.policy_path, obs_dim=obs_dim, action_dim=act_dim)
 
-    # Optional pretrain model for x0 sampling
-    pretrain = None
-    if args.pretrain_model != 'none':
-        from pretrain import load_pretrain_model_with_config
-        pretrain, _cfg = load_pretrain_model_with_config(args.pretrain_model)
-        pretrain.eval()
+    # Optional pretrain sampler for x0
+    pretrain_sampler: PretrainSampler | None = None
+    if args.pretrain_model is not None:
+        if not os.path.exists(args.pretrain_model):
+            raise FileNotFoundError(f"Pretrain model not found: {args.pretrain_model}")
+        pretrain_model = load_pretrain_model(args.pretrain_model, action_dim=act_dim)
+        if not hasattr(pretrain_model, 'sample'):
+            raise ValueError("Pretrain model must expose a sample(num_samples, device=...) method")
+        pretrain_sampler = PretrainSampler(pretrain_model)
+        print(f"✅ Using pretrain prior for x0 sampling: {args.pretrain_model}")
 
     # Time schedule
     ts, dts = parse_schedule(args.flow_schedule)
@@ -351,8 +520,12 @@ def main():
         a1_t = torch.from_numpy(act_b).to(device)
 
         # Sample x0 (normalized space)
-        if pretrain is not None:
-            x0_t = pretrain.sample(len(obs_b), device=device)
+        if pretrain_sampler is not None:
+            x0_t = pretrain_sampler(obs_t.shape[0])
+            if x0_t.shape != a1_t.shape:
+                raise ValueError(
+                    f"Pretrain sample shape {tuple(x0_t.shape)} does not match action shape {tuple(a1_t.shape)}"
+                )
         else:
             x0_t = torch.randn_like(a1_t)
 

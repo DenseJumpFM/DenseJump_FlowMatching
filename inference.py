@@ -87,76 +87,84 @@ def export_results_to_csv(results_data, csv_path="inference_results.csv"):
         # Write the results
         writer.writerow(results_data)
     
-    print(f"‚ú?Results exported to CSV: {csv_path}")
+    print(f"Results exported to CSV: {csv_path}")
 
 
 def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_episodes, seed=None, flow_steps=1, csv_output=None, num_train_stats=None, dump_npz=None, dump_max=None, task=None, action_mode='normalize', checkpoint_name=None, epoch=None, jump_point=None):
     """Run inference with trained flow matching policy"""
     def _parse_flow_schedule(flow_steps_arg, jump_point_arg=None):
-        """Return (ts, dts) where ts is a strictly increasing list in [0,1] with ts[0]==0 and ts[-1]==1.
+        """Return (ts, dts) with ts strictly increasing in [0,1], anchored at 0 and 1."""
 
-        Inputs:
-          - int-like string 'N' => uniform N steps (N+1 points including 0 and 1)
-          - list string '[a,b,c]' => interpreted as interior points; we anchor at 0 and 1 automatically.
-            You do NOT need to include 0 and 1; they will be enforced exactly.
-          - when --jump_point is provided with an integer N, we take one Euler step from jump_point to 1 and
-            (N-1) uniform steps from 0 to jump_point. Example: N=3, jump_point=0.5 -> [0, 0.25, 0.5, 1].
-        """
-        # If already list/tuple provided programmatically
+        def _build_schedule_from_list(vals):
+            interior: list[float] = []
+            seen: set[float] = set()
+            for raw in vals:
+                v = float(raw)
+                if v <= 0.0 or v >= 1.0:
+                    if np.isclose(v, 0.0) or np.isclose(v, 1.0):
+                        continue
+                    raise ValueError(
+                        "Flow schedule interior points must lie strictly between 0 and 1"
+                    )
+                if v not in seen:
+                    seen.add(v)
+                    interior.append(v)
+            interior.sort()
+            return [0.0] + interior + [1.0]
+
+        ts: list[float]
+        # Case 1: explicit list/tuple provided programmatically or via string literal
         if isinstance(flow_steps_arg, (list, tuple)):
-            ts = [float(x) for x in flow_steps_arg]
-            s = str(flow_steps_arg).strip()
+            ts = _build_schedule_from_list(flow_steps_arg)
+            if jump_point_arg is not None:
+                print(
+                    "‚ÑπÔ∏è  Ignoring --jump_point because an explicit flow schedule list was provided."
+                )
+        else:
+            if flow_steps_arg is None:
+                s = "2"  # default to two points -> [0,1]
+            else:
+                s = str(flow_steps_arg).strip()
             if s.startswith('[') and s.endswith(']'):
-                inner = s[1:-1].strip()
-                # Parse interior points; ignore empty strings
-                pts = [float(x) for x in inner.split(',') if x.strip() != '']
-                # Filter out 0 and 1 if present; enforce 0<pt<1
-                interior = []
-                for v in pts:
-                    if v <= 0.0 or v >= 1.0:
-                        if np.isclose(v, 0.0) or np.isclose(v, 1.0):
-                            continue
-                        raise ValueError("Non-uniform schedule values must lie strictly between 0 and 1 (0 and 1 added automatically)")
-                    interior.append(float(v))
-                # Sort and unique while preserving order of first appearance
-                seen = set()
-                interior_unique = []
-                for v in interior:
-                    if v not in seen:
-                        seen.add(v)
-                        interior_unique.append(v)
-                interior = sorted(interior_unique)
-                ts = [0.0] + interior + [1.0]
-                # If an explicit schedule was provided, ignore jump_point if given
+                try:
+                    parsed = json.loads(s)
+                except Exception:
+                    parsed = [float(x) for x in s[1:-1].split(',') if x.strip() != '']
+                ts = _build_schedule_from_list(parsed)
                 if jump_point_arg is not None:
-                    print("‚ÑπÔ∏è  Ignoring --jump_point because an explicit flow schedule was provided via --flow_steps list.")
+                    print(
+                        "‚ÑπÔ∏è  Ignoring --jump_point because an explicit flow schedule list was provided."
+                    )
+            else:
                 try:
                     n = int(float(s))
-                except Exception:
-                    raise ValueError("--flow_steps must be an int like '4' or a list like '[0,0.1,0.5,1]'")
+                except Exception as exc:
+                    raise ValueError(
+                        "--flow_steps must be an int like '4' or a list like '[0.25,0.75]'"
+                    ) from exc
                 n = max(1, n)
-                # If jump_point is provided, allocate one step for [jump_point, 1]
+                ts = np.linspace(0.0, 1.0, n + 1).tolist()
                 if jump_point_arg is not None:
                     jp = float(jump_point_arg)
                     if not (0.0 < jp < 1.0):
-                        raise ValueError("--jump_point must be a float strictly between 0 and 1")
+                        raise ValueError("--jump_point must be strictly between 0 and 1")
                     if n < 2:
-                        raise ValueError("--jump_point requires --flow_steps >= 2 to allocate steps before and after the jump point")
-                    k = n - 1  # steps from 0 to jump_point
-                    left = np.linspace(0.0, jp, k + 1).tolist()  # k steps -> k+1 points including 0 and jp
-                    ts = left + [1.0]  # final step from jp to 1
-                    ts = np.linspace(0.0, 1.0, n + 1).tolist()
+                        raise ValueError(
+                            "--jump_point requires --flow_steps >= 2 to allocate steps before the jump"
+                        )
+                    left_steps = n - 1
+                    left = np.linspace(0.0, jp, left_steps + 1).tolist()
+                    ts = left + [1.0]
 
         if len(ts) < 2:
             raise ValueError("Flow schedule must contain at least two time points (including 0 and 1)")
-        # Enforce strict monotonicity and exact anchors
         if not np.isclose(ts[0], 0.0) or not np.isclose(ts[-1], 1.0):
             raise ValueError("Flow schedule must start at 0 and end at 1")
         for i in range(1, len(ts)):
-            if not (ts[i] > ts[i-1]):
+            if not (ts[i] > ts[i - 1]):
                 raise ValueError("Flow schedule must be strictly increasing")
 
-        dts = [ts[i+1] - ts[i] for i in range(len(ts) - 1)]
+        dts = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
         return ts, dts
     # Reproducibility
     if seed is not None:
@@ -209,18 +217,20 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
 
     # Environment setup
     if num_envs > 1:
-        def make_env(env_name, render_mode="rgb_array", env_seed=None):
+        def make_env(env_name: str, render_mode: str = "rgb_array", env_seed: int | None = None):
             def _init():
-                # Prefer passing max_episode_steps via gym.make for Gymnasium versions that support it.
-                env = gym.make(env_name, render_mode=render_mode)
+                env_local = gym.make(env_name, render_mode=render_mode)
                 if env_seed is not None:
-                    env.reset(seed=env_seed)
-                return env
+                    env_local.reset(seed=env_seed)
+                return env_local
             return _init
-        if seed is not None:
-            env = AsyncVectorEnv([make_env(env_name, env_seed=seed + i) for i in range(num_envs)])
-            env = AsyncVectorEnv([make_env(env_name) for _ in range(num_envs)])
-        # Prefer passing max_episode_steps via gym.make; do not wrap manually if unsupported
+
+        env_fns = []
+        for idx in range(num_envs):
+            env_seed = (seed + idx) if seed is not None else None
+            env_fns.append(make_env(env_name, render_mode=render_mode, env_seed=env_seed))
+        env = AsyncVectorEnv(env_fns)
+    else:
         env = gym.make(env_name, render_mode=render_mode)
 
     env_obs_dim = env.observation_space.shape[-1]
@@ -243,21 +253,36 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
     if obs_dim != env_obs_dim or action_dim != env_action_dim:
         print(f"‚ö†Ô∏è  Dimension mismatch: env({env_obs_dim},{env_action_dim}) vs data({obs_dim},{action_dim})")
         print("‚ö†Ô∏è  Environment auto-detection may have failed")
-        print(f"‚ú?Dimensions match: obs_dim={obs_dim}, action_dim={action_dim}")
+        print(f"Dimensions match: obs_dim={obs_dim}, action_dim={action_dim}")
 
     # Load policy with auto-detection of configuration
     try:
         # Try to load policy with embedded configuration
         policy_checkpoint = torch.load(policy_path, map_location=device)
         if isinstance(policy_checkpoint, dict) and 'model_state_dict' in policy_checkpoint:
-            # New format with config
-            detected_obs_hidden = policy_checkpoint.get('obs_hidden_dims', [128, 128])
-            detected_policy_hidden = policy_checkpoint.get('policy_hidden_dims', [128, 128])
-            detected_dropout_p = policy_checkpoint.get('dropout_p', 0.1)
-            detected_layernorm = policy_checkpoint.get('layernorm', False)
-            detected_arch = policy_checkpoint.get('arch', 'mlp')
-            detected_unet_base_ch = policy_checkpoint.get('unet_base_ch', 64)
-            detected_unet_depth = policy_checkpoint.get('unet_depth', 3)
+            required_cfg_keys = [
+                'obs_hidden_dims',
+                'policy_hidden_dims',
+                'dropout_p',
+                'layernorm',
+                'arch',
+                'unet_base_ch',
+                'unet_depth',
+            ]
+            missing_cfg = [k for k in required_cfg_keys if k not in policy_checkpoint]
+            if missing_cfg:
+                raise ValueError(
+                    "Policy file missing configuration keys: "
+                    f"{missing_cfg}. Please retrain policy with updated train_flow.py"
+                )
+
+            detected_obs_hidden = policy_checkpoint['obs_hidden_dims']
+            detected_policy_hidden = policy_checkpoint['policy_hidden_dims']
+            detected_dropout_p = policy_checkpoint['dropout_p']
+            detected_layernorm = policy_checkpoint['layernorm']
+            detected_arch = policy_checkpoint['arch']
+            detected_unet_base_ch = policy_checkpoint['unet_base_ch']
+            detected_unet_depth = policy_checkpoint['unet_depth']
             
             # Use detected config from policy file
             actual_obs_hidden = detected_obs_hidden
@@ -305,21 +330,21 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                         new_state_dict[f'time_mlp.{key}'] = value
                 
                 state_dict = new_state_dict
-                print("‚ú?Model format conversion completed")
+                print("Model format conversion completed")
             
             policy.load_state_dict(state_dict)
             
-            print(f"‚ú?Loaded policy: arch={detected_arch}, obs_hidden={actual_obs_hidden}, policy_hidden={actual_policy_hidden}, dropout_p={detected_dropout_p}")
-            raise ValueError("Policy file missing configuration. Please retrain policy with updated train_flow.py")
+            print(f"Loaded policy: arch={detected_arch}, obs_hidden={actual_obs_hidden}, policy_hidden={actual_policy_hidden}, dropout_p={detected_dropout_p}")
     except Exception as e:
-        print(f"‚ù?Error loading policy: {e}")
+        print(f"Error loading policy: {e}")
         raise
     
     policy.eval()
-    print(f"‚ú?Flow matching policy loaded from {policy_path}")
+    print(f"Flow matching policy loaded from {policy_path}")
 
     # Load normalization stats using shared training loader
-    data_dict = load_data(data_path)    observations = data_dict['observations']
+    data_dict = load_data(data_path)
+    observations = data_dict['observations']
     actions = data_dict['actions']
     
     if num_train_stats is not None:
@@ -426,6 +451,7 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                 # Efficient denormalization and reshaping
                 if action_mode == 'scale':
                     action_denorm = (action_seq + 1.0) * 0.5 * scale_t + low_t
+                else:
                     action_denorm = action_seq * action_std_tensor + action_mean_tensor
                 action = action_denorm.view(H, action_dim)[0].cpu().numpy()
                 # Clip action to env bounds to avoid invalid/out-of-range torques
@@ -473,25 +499,26 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                 if ('AdroitHandPen' in env_name) and (not custom_ended):
                     timeout_without_custom += 1
             episode_pbar.set_postfix({'Return': f'{episode_reward:.2f}', 'Steps': step_count})
-            
-            # Multi-environment logic - FIXED
-            # Reset environments for this episode batch
-            if seed is not None:
-                obs, _ = env.reset(seed=[seed + ep * num_envs + i for i in range(num_envs)])
-                obs, _ = env.reset()
-            
-            episode_rewards = np.zeros(num_envs)
-            episode_steps = np.zeros(num_envs, dtype=int)
-            episodes_collected = 0
-            current_round_returns = []
-            active_envs = np.ones(num_envs, dtype=bool)  # Track which environments are still active
-            custom_ended = np.zeros(num_envs, dtype=bool)
-            # Standup tracking per environment
-            if is_standup_env:
-                stood_up_flags = np.zeros(num_envs, dtype=bool)
-                dropped_after_flags = np.zeros(num_envs, dtype=bool)
-            
-            while episodes_collected < num_envs and np.any(active_envs):
+            continue
+
+        # Multi-environment logic
+        if seed is not None:
+            obs, _ = env.reset(seed=[seed + ep * num_envs + i for i in range(num_envs)])
+        else:
+            obs, _ = env.reset()
+
+        episode_rewards = np.zeros(num_envs)
+        episode_steps = np.zeros(num_envs, dtype=int)
+        episodes_collected = 0
+        current_round_returns = []
+        active_envs = np.ones(num_envs, dtype=bool)  # Track which environments are still active
+        custom_ended = np.zeros(num_envs, dtype=bool)
+        # Standup tracking per environment
+        if is_standup_env:
+            stood_up_flags = np.zeros(num_envs, dtype=bool)
+            dropped_after_flags = np.zeros(num_envs, dtype=bool)
+
+        while episodes_collected < num_envs and np.any(active_envs):
                 # Only process active environments
                 active_indices = np.where(active_envs)[0]
                 if len(active_indices) == 0:
@@ -518,6 +545,7 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                 # Denormalize and reshape actions
                 if action_mode == 'scale':
                     action_denorm = (action_seq + 1.0) * 0.5 * scale_t + low_t
+                else:
                     action_denorm = action_seq * action_std_tensor + action_mean_tensor
                 actions_for_active = action_denorm.view(len(active_indices), H, action_dim)[:, 0, :].cpu().numpy()
                 # Clip actions for active envs to bounds
@@ -530,11 +558,11 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                 # Capture for active envs before stepping
                 if capture_obs:
                     if (dump_max is None) or (len(captured_obs) < dump_max):
-                        # Append up to dump_max
                         remaining = None if dump_max is None else (dump_max - len(captured_obs))
                         if remaining is None or len(active_indices) <= remaining:
                             captured_obs.extend([o.copy() for o in active_obs])
                             captured_actions.extend([a.copy() for a in actions_for_active])
+                        elif remaining > 0:
                             captured_obs.extend([o.copy() for o in active_obs[:remaining]])
                             captured_actions.extend([a.copy() for a in actions_for_active[:remaining]])
                 
@@ -611,19 +639,18 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                             timeout_without_custom += 1
                     active_envs[env_idx] = False  # Mark environment as inactive
                     episodes_collected += 1
-            
-            # Display progress
-            if current_round_returns:
-                avg_ret = np.mean(current_round_returns)
-                episode_pbar.set_postfix({
-                    'Avg_Return': f'{avg_ret:.2f}',
-                    'Completed': len(current_round_returns),
-                    'Total_Collected': len(all_returns)
-                })
-            
-            # Periodic memory cleanup
-            if ep % 10 == 0 and device.type == 'cuda':
-                torch.cuda.empty_cache()
+        # Display progress for multi-env episodes
+        if current_round_returns:
+            avg_ret = np.mean(current_round_returns)
+            episode_pbar.set_postfix({
+                'Avg_Return': f'{avg_ret:.2f}',
+                'Completed': len(current_round_returns),
+                'Total_Collected': len(all_returns)
+            })
+
+        # Periodic memory cleanup
+        if ep % 10 == 0 and device.type == 'cuda':
+            torch.cuda.empty_cache()
 
     env.close()
     final_avg = np.mean(all_returns)
@@ -639,7 +666,7 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
         standup_hold_rate = stood_up_and_held_count / len(all_returns)
         success_rate = standup_rate  # replace success rate with stand-up rate
     
-    # Method name (flow matching without pretraining)
+    # Method name (flow matching baseline)
     method_name = "FM"
     
     print("=" * 50)
@@ -661,7 +688,7 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
     print(f"Episodes truncated (time limit): {trunc_count}")
     # Diagnostic line for suspected env-logic inconsistency
     if 'AdroitHandPen' in env_name:
-        print(f"Custom sparse-style termination ‚Ä?success: {custom_success_episodes}, failure: {custom_failure_episodes}")
+        print(f"Custom sparse-style termination success: {custom_success_episodes}, failure: {custom_failure_episodes}")
         print(f"Reached max steps without custom termination: {timeout_without_custom}")
     print(f"Method: {method_name}")
     print("=" * 50)
@@ -773,10 +800,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
 
 
