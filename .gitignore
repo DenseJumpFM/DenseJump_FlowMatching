@@ -1,0 +1,6 @@
+# Log output
+logs/
+*.log
+
+# Local datasets
+data/
