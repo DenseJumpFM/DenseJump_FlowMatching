@@ -1,30 +1,11 @@
-"""Adaptive model definitions with configurable depth/width via CLI.
-
-Usage example:
-
-python adaptive_models.py \
-    --task walker2d \
-    --model vae \
-    --hidden-dims 512 512 512 \
-    --latent-dim 128 \
-    --dropout 0.1
-
-This will build a 3‑layer (512‑wide) VAE suited for Walker2d.
-"""
-
 from __future__ import annotations
 import argparse
 import math
 from typing import List
-
 import torch
 from torch.backends import nnpack
 import torch.nn as nn
 import numpy as np
-
-# -----------------------------------------------------------------------------
-# Utility factory
-# -----------------------------------------------------------------------------
 
 def build_mlp(
     in_dim: int,
@@ -74,9 +55,7 @@ def sinusoidal_time_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
         emb = torch.cat([emb, torch.zeros((emb.size(0), dim - emb.shape[-1]), device=device)], dim=-1)
     return emb
 
-# -----------------------------------------------------------------------------
-# UNet Components for Flow Matching
-# -----------------------------------------------------------------------------
+
 
 class ResidualBlock1D(nn.Module):
     """1D residual block for sequence modeling."""
@@ -126,9 +105,6 @@ class TinyUNet1D(nn.Module):
             x = self.dropout(x)  # Add dropout
         return self.out_proj(x)
 
-# -----------------------------------------------------------------------------
-# Flow Matching Policy with UNet Support
-# -----------------------------------------------------------------------------
 
 class FlowMatchingPolicy(nn.Module):
     def __init__(
@@ -423,10 +399,6 @@ class FlowMatchingPolicy(nn.Module):
         # MSE loss
         loss = torch.nn.functional.mse_loss(eps_hat, noise, reduction=reduction)
         return loss
-
-# -----------------------------------------------------------------------------
-# CLI / factory example
-# -----------------------------------------------------------------------------
 
 def parse_args():
     parser = argparse.ArgumentParser()

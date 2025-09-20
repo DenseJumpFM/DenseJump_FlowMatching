@@ -1,3 +1,0 @@
-python train_flow.py --data_path pendulum_expert.npz --num_train=600 --num_epochs 150 --seed 0 --lr 1e-4 
-
-python inference.py --data_path pendulum_expert.npz --seed 0 --num_envs 10 --num_episodes 10 --num_train_stats 600 --policy_path logs/flow_matching/Pendulum-v1/seed0_nt600_uniform_obs128x128_pol128x128_mlp/policy.pth --flow_steps 1

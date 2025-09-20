@@ -1,5 +1,0 @@
-task,seed,method,average_reward,success_rate,num_episodes,total_steps,standup_rate,standup_hold_rate,checkpoint,epoch
-Pendulum-v1,0,FM,-192.337,1.0,100,20000,,,,
-Pendulum-v1,0,FM,-188.8783,1.0,100,20000,,,,
-Pendulum-v1,0,FM,-188.8783,1.0,100,20000,,,,
-Pendulum-v1,0,FM,-174.6471,1.0,100,20000,,,,

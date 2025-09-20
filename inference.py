@@ -40,7 +40,6 @@ device = torch.device(
     else "cpu"
 )
 
-
 def set_seed(seed):
     """Set random seeds for reproducibility"""
     random.seed(seed)
@@ -225,11 +224,10 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
                 return env_local
             return _init
 
-        env_fns = []
-        for idx in range(num_envs):
-            env_seed = (seed + idx) if seed is not None else None
-            env_fns.append(make_env(env_name, render_mode=render_mode, env_seed=env_seed))
-        env = AsyncVectorEnv(env_fns)
+        if seed is not None:
+            env = AsyncVectorEnv([make_env(env_name, render_mode=render_mode, env_seed=seed + i) for i in range(num_envs)])
+        else:
+            env = AsyncVectorEnv([make_env(env_name, render_mode=render_mode) for _ in range(num_envs)])
     else:
         env = gym.make(env_name, render_mode=render_mode)
 
@@ -351,10 +349,15 @@ def run_inference(env_name, data_path, policy_path, render_mode, num_envs, num_e
         print(f"📊 Recomputing normalization stats using first {num_train_stats} samples (matching training)")
         train_obs = observations[:num_train_stats]
         train_actions = actions[:num_train_stats]
-        obs_mean, obs_std = np.mean(train_obs, axis=0), np.std(train_obs, axis=0)
-        action_mean, action_std = np.mean(train_actions, axis=0), np.std(train_actions, axis=0)
-        obs_mean, obs_std = data_dict['obs_mean'], data_dict['obs_std']
-        action_mean, action_std = data_dict['action_mean'], data_dict['action_std']
+        obs_mean = np.mean(train_obs, axis=0)
+        obs_std = np.std(train_obs, axis=0)
+        action_mean = np.mean(train_actions, axis=0)
+        action_std = np.std(train_actions, axis=0)
+    else:
+        obs_mean = data_dict['obs_mean']
+        obs_std = data_dict['obs_std']
+        action_mean = data_dict['action_mean']
+        action_std = data_dict['action_std']
         print("📊 Using normalization stats from unified loader")
 
     obs_std = np.maximum(obs_std, 1e-8)
@@ -800,5 +803,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
