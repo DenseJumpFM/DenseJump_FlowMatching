@@ -1,0 +1,11 @@
+# Core training and evaluation dependencies
+numpy
+torch
+gymnasium
+gymnasium-robotics
+tensorboard
+tqdm
+
+# Dataset ingestion and optional tooling
+h5py
+minari
