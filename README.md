@@ -2,8 +2,11 @@
 
 This repository provides a minimal, reference implementation of the Dense-Jump Flow Matching Policy. The method introduced is designed to be **simple and effective**, making it easy to implement and extend—perfect for "vibe coding" tools or integrating on top of your own flow matching policy codebase.
 
-The main purpose of this repository is to share additional experiments and ablation studies that were not included in the original paper due to length restrictions. 
+The main purpose of this repository is to share additional experiments and ablation studies that were not included in the original paper due to length restrictions.
 
+## Authors
+
+Zidong Chen, Zihao Guo, Peng Wang, ThankGod Itua Egbe, Yan Lyu, Chenghao Qian.
 
 ## Citation
 
@@ -13,8 +16,8 @@ If you find this work useful, please cite our paper:
 @inproceedings{chen2025densejump,
   title={Dense-Jump Flow Matching with Non-Uniform Time Scheduling for Offline Reinforcement Learning},
   author={Chen, Zidong and Guo, Zihao and Wang, Peng and Egbe, ThankGod Itua and Lyu, Yan and Qian, Chenghao},
-  booktitle={2026 IEEE International Conference on Robotics and Automation (ICRA)},
-  year={2026},
+  booktitle={2025 IEEE International Conference on Robotics and Automation (ICRA)},
+  year={2025},
   note={Accepted},
   url={https://arxiv.org/abs/2509.13574}
 }
@@ -46,6 +49,12 @@ Used to evaluate a trained policy in its environment. It calculates success rate
 python inference.py --task pendulum_expert --policy_path logs/flow_matching/best_model.pth --num_episodes 10
 ```
 
+### 3. Model Architecture (`model.py`)
+Defines the `FlowMatchingPolicy` class. It features a flexible architecture supporting both MLP and TinyUNet backbones (for 1D sequence modeling), along with sinusoidal time embeddings. This file is self-contained and easy to modify for custom architectures.
+
+### 4. Configuration (`tasks_paths.json`)
+A JSON file mapping task names to their environment IDs and dataset paths. Modify this file to add new custom tasks or point to different datasets.
+
 ### 5. Analysis Tools (`knn/`)
 This directory contains scripts for analyzing the learned vector fields, primarily used for the ablation studies mentioned in the paper.
 *   **`knn/knn_build_index.py`**: Builds a k-Nearest Neighbors index on the dataset actions.
@@ -71,22 +80,18 @@ pip install -r requirements.txt
 If you use Gymnasium or Minari in your work, please cite them:
 
 ```bibtex
-@article{towers2024gymnasium,
+@article{towers2023gymnasium,
   title={Gymnasium: A Standard Interface for Reinforcement Learning Environments},
-  author={Towers, Mark and Terry, Jordan K. and Kwiatkowski, Ariel and Balis, John U. and Cola, Gianluca and Deleu, Tristan and Goul{\~a}o, Manuel and Kallinteris, Andreas and KG, Arjun and Krimmel, Markus and others},
-  journal={arXiv preprint arXiv:2407.17032},
-  year={2024},
-  url={https://arxiv.org/abs/2407.17032}
+  author={Towers, Mark and Terry, Jordan K and Kwiatkowski, Ariel and Balis, John U and Cola, Gianluca and Deleu, Tristan and Goul{\~a}o, Manuel and Kallinteris, Andreas and KG, Arjun and Krimmel, Markus and others},
+  journal={arXiv preprint arXiv:2310.17067},
+  year={2023}
 }
 
-@software{minari2024,
-  title={Minari: A Standard Interface for Offline Reinforcement Learning Datasets},
-  author={de Lazcano, Rodrigo and others},
+@article{minari2024,
+  title={Minari: A Python Library for Offline Reinforcement Learning Datasets},
+  author={R. C. G., Carballo and others},
+  journal={arXiv preprint},
   year={2024},
-  publisher={Zenodo},
-  version={0.5.0},
-  url={https://doi.org/10.5281/zenodo.13767625},
-  note={See also \url{https://minari.farama.org/}}
+  url={https://minari.farama.org/}
 }
-
 ```
