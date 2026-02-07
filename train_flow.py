@@ -9,7 +9,6 @@ import os
 import random
 from model import FlowMatchingPolicy
 import pickle
-import gc
 from typing import Optional, Tuple
 
 # Determine the appropriate compute device. Prefer CUDA when available,

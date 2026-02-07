@@ -23,22 +23,6 @@
         "action_low": [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0],
         "action_high": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     },
-    "hopper": {
-        "data_path": "data/hopper_expert.hdf5",
-        "env_name": "Hopper-v4",
-        "obs_dim": 11,
-        "action_dim": 3,
-        "action_low": [-1.0, -1.0, -1.0],
-        "action_high": [1.0, 1.0, 1.0]
-    },
-    "pusht": {
-        "data_path": "data/pusht_state_demo.npz",
-        "env_name": "PushT-v0",
-        "obs_dim": 23,
-        "action_dim": 2,
-        "action_low": [-1.0, -1.0],
-        "action_high": [1.0, 1.0]
-    },
     "humanoidstandup": {
         "data_path": "data/humanoidstandup.hdf5",
         "env_name": "HumanoidStandup-v5",
