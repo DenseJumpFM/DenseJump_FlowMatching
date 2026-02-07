@@ -1,12 +1,4 @@
 {
-    "pendulum": {
-        "data_path": "pendulum_expert.npz",
-        "env_name": "Pendulum-v1",
-        "obs_dim": 3,
-        "action_dim": 1,
-        "action_low": [-2.0],
-        "action_high": [2.0]
-    },
     "pen": {
         "data_path": "data/pen_expert.hdf5",
         "env_name": "AdroitHandPenSparse-v1",

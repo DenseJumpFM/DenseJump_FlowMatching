@@ -383,7 +383,7 @@ def main():
     parser.add_argument('--data_path', type=str, required=True, help='Expert data file path')
     parser.add_argument('--policy_path', type=str, required=True, help='Trained policy checkpoint (.pth)')
     parser.add_argument('--num_train', type=int, required=True, help='Number of training samples; remainder used as validation')
-    parser.add_argument('--flow_schedule', type=str, default='[0.1,0.5,0.9]', help='Interior points, e.g., [0.1,0.5] or int N')
+    parser.add_argument('--euler_steps', type=str, default='[0.1,0.5,0.9]', help='Interior points, e.g., [0.1,0.5] or int N')
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--knn_index', type=str, default='knn_index.joblib', help='Path to prebuilt KNN index (joblib/pkl). If missing, falls back to on-the-fly KNN.')
     parser.add_argument('--pretrain_model', type=str, default=None,
@@ -472,7 +472,7 @@ def main():
         print(f"✅ Using pretrain prior for x0 sampling: {args.pretrain_model}")
 
     # Time schedule
-    ts, dts = parse_schedule(args.flow_schedule)
+    ts, dts = parse_schedule(args.euler_steps)
     ts_np = np.array(ts, dtype=np.float32)
 
     # Prepare KNN

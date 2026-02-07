@@ -753,7 +753,7 @@ def main():
     parser.add_argument('--data_path', type=str, 
                         help="Path to expert data file or Minari dataset ID (e.g., D4RL/pen-expert-v2)")
     parser.add_argument('--policy_path', type=str, required=True,
-                        help="Path to trained flow matching policy")
+                        help="Path to trained flow matching policy file OR directory containing checkpoints")
     parser.add_argument('--render_mode', choices=['human', 'rgb_array'], default='rgb_array',
                         help="Render mode: 'human' or 'rgb_array'")
     parser.add_argument('--num_envs', type=int, default=50,
@@ -782,24 +782,76 @@ def main():
     if args.render_mode == 'human':
         args.num_envs = 1
         print("ℹ️  Human rendering mode: using single environment")
+
+    # Handle directory vs file for policy_path
+    if os.path.isdir(args.policy_path):
+        print(f"📂 Directory provided: scanning for .pth checkpoints in {args.policy_path}")
+        checkpoints = []
+        for f in os.listdir(args.policy_path):
+            if f.endswith('.pth'):
+                full_path = os.path.join(args.policy_path, f)
+                # Try to extract epoch number for sorting
+                # Assuming format like "model_epoch_10.pth" or similar
+                import re
+                match = re.search(r'(\d+)', f)
+                epoch_num = int(match.group(1)) if match else 999999
+                checkpoints.append((epoch_num, f, full_path))
         
-    run_inference(
-        env_name=args.env_name,
-        data_path=args.data_path,
-        policy_path=args.policy_path,
-        render_mode=args.render_mode,
-        num_envs=args.num_envs,
-        num_episodes=args.num_episodes,
-        seed=args.seed,
-        flow_steps=args.flow_steps,
-        jump_point=args.jump_point,
-        csv_output=args.csv_output,
-        num_train_stats=args.num_train_stats,
-        dump_npz=args.dump_npz,
-        dump_max=args.dump_max,
-        task=None,
-        action_mode=args.action_mode
-    )
+        # Sort by epoch number (or filename if no number found)
+        checkpoints.sort(key=lambda x: x[0])
+        
+        if not checkpoints:
+            print(f"❌ No .pth files found in {args.policy_path}")
+            return
+
+        print(f"Found {len(checkpoints)} checkpoints. Starting batch inference...")
+        
+        for ep_num, fname, fpath in checkpoints:
+            print(f"\n▶️  Evaluating checkpoint: {fname} (Epoch {ep_num if ep_num != 999999 else '?'})")
+            run_inference(
+                env_name=args.env_name,
+                data_path=args.data_path,
+                policy_path=fpath,
+                render_mode=args.render_mode,
+                num_envs=args.num_envs,
+                num_episodes=args.num_episodes,
+                seed=args.seed,
+                flow_steps=args.flow_steps,
+                jump_point=args.jump_point,
+                csv_output=args.csv_output,
+                num_train_stats=args.num_train_stats,
+                dump_npz=args.dump_npz,
+                dump_max=args.dump_max,
+                task=None,
+                action_mode=args.action_mode,
+                checkpoint_name=fname,
+                epoch=ep_num if ep_num != 999999 else None
+            )
+            # Garbage collect to free memory between models
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    else:
+        # Single file case
+        run_inference(
+            env_name=args.env_name,
+            data_path=args.data_path,
+            policy_path=args.policy_path,
+            render_mode=args.render_mode,
+            num_envs=args.num_envs,
+            num_episodes=args.num_episodes,
+            seed=args.seed,
+            flow_steps=args.flow_steps,
+            jump_point=args.jump_point,
+            csv_output=args.csv_output,
+            num_train_stats=args.num_train_stats,
+            dump_npz=args.dump_npz,
+            dump_max=args.dump_max,
+            task=None,
+            action_mode=args.action_mode,
+            checkpoint_name=os.path.basename(args.policy_path)
+        )
 
 if __name__ == "__main__":
     main()
